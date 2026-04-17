@@ -5,7 +5,7 @@ docker --version 2>nul
 if errorlevel 1 goto nodocker
 
 echo Docker found! Starting LibreCrawl...
-docker-compose up -d
+docker compose up -d
 timeout /t 3 /nobreak >nul
 
 echo.
@@ -19,8 +19,8 @@ echo ===========================================================================
 echo.
 
 start http://localhost:5000
-docker-compose logs -f
-docker-compose down
+docker compose logs -f
+docker compose down
 exit /b
 
 :nodocker

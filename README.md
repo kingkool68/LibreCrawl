@@ -70,7 +70,7 @@ cd LibreCrawl
 cp .env.example .env
 
 # Start LibreCrawl
-docker-compose up -d
+docker compose up -d
 
 # Open browser to http://localhost:5000
 ```

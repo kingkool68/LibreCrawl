@@ -3,9 +3,9 @@
 # Start LibreCrawl - tries Docker first, falls back to Python
 
 echo "Checking for Docker..."
-if command -v docker &> /dev/null && command -v docker-compose &> /dev/null; then
+if command -v docker &> /dev/null && command -v docker compose &> /dev/null; then
     echo "Docker found! Starting LibreCrawl with Docker..."
-    docker-compose up -d
+    docker compose up -d
 
     # Wait for the service to be ready
     echo "Waiting for LibreCrawl to start..."
@@ -33,15 +33,15 @@ if command -v docker &> /dev/null && command -v docker-compose &> /dev/null; the
         fi
 
         # Trap Ctrl+C to gracefully shutdown
-        trap 'echo ""; echo "Stopping LibreCrawl..."; docker-compose down; exit 0' INT
+        trap 'echo ""; echo "Stopping LibreCrawl..."; docker compose down; exit 0' INT
 
         # Keep terminal open and show logs
         echo "Showing live logs (press Ctrl+C to stop):"
         echo ""
-        docker-compose logs -f
+        docker compose logs -f
     else
         echo "Error: LibreCrawl container failed to start"
-        docker-compose logs
+        docker compose logs
         exit 1
     fi
 else
