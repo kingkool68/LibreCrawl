@@ -174,33 +174,47 @@
 
         <div id="alert" class="alert"></div>
 
+        {% if skip_auth %}
+        <div class="alert alert-error show" style="text-align: left;">
+            <strong>⚠️ Authentication is disabled.</strong>
+            Anyone can log in as any username with no password.
+            The username is only used to separate sessions.
+        </div>
+        {% endif %}
+
         <form id="loginForm">
             <div class="form-group">
                 <label for="username">Username</label>
-                <input type="text" id="username" name="username" required autofocus>
+                <input type="text" id="username" name="username" required autofocus maxlength="50">
             </div>
 
+            {% if not skip_auth %}
             <div class="form-group">
                 <label for="password">Password</label>
                 <input type="password" id="password" name="password" required>
             </div>
+            {% endif %}
 
-            <button type="submit" class="btn" id="loginBtn">Login</button>
+            <button type="submit" class="btn" id="loginBtn">{{ 'Continue' if skip_auth else 'Login' }}</button>
         </form>
 
-        {% if not guest_disabled %}
+        {% if not guest_disabled and not skip_auth %}
         <button class="btn btn-guest" id="guestBtn">Continue as Guest (3 crawls/24h)</button>
         {% endif %}
 
+        {% if not skip_auth %}
         <div class="register-link">
             Don't have an account? <a href="/register" id="registerLink">Register here</a>
         </div>
+        {% endif %}
     </div>
 
     <script>
         const form = document.getElementById('loginForm');
         const loginBtn = document.getElementById('loginBtn');
         const alert = document.getElementById('alert');
+        const skipAuth = {{ 'true' if skip_auth else 'false' }};
+        const defaultLoginText = loginBtn.textContent;
 
         function showAlert(message, type) {
             alert.textContent = message;
@@ -216,10 +230,11 @@
             hideAlert();
 
             const username = document.getElementById('username').value;
-            const password = document.getElementById('password').value;
+            const passwordEl = document.getElementById('password');
+            const password = passwordEl ? passwordEl.value : '';
 
             loginBtn.disabled = true;
-            loginBtn.textContent = 'Logging in...';
+            loginBtn.textContent = skipAuth ? 'Continuing...' : 'Logging in...';
 
             try {
                 const response = await fetch('/api/login', {
@@ -240,12 +255,12 @@
                 } else {
                     showAlert(data.message, 'error');
                     loginBtn.disabled = false;
-                    loginBtn.textContent = 'Login';
+                    loginBtn.textContent = defaultLoginText;
                 }
             } catch (error) {
                 showAlert('An error occurred. Please try again.', 'error');
                 loginBtn.disabled = false;
-                loginBtn.textContent = 'Login';
+                loginBtn.textContent = defaultLoginText;
             }
         });
 
@@ -287,7 +302,7 @@
         const registrationDisabled = {{ 'true' if registration_disabled else 'false' }};
         const registerLink = document.getElementById('registerLink');
 
-        if (registrationDisabled) {
+        if (registrationDisabled && registerLink) {
             registerLink.addEventListener('click', (e) => {
                 e.preventDefault();
                 window.alert('Registrations are disabled');

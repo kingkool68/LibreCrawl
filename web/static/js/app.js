@@ -411,7 +411,14 @@ function pollCrawlProgress() {
                 loadVisualizationData();
             }
 
-            if (crawlState.isRunning && data.status !== 'completed') {
+            if (data.status === 'demo_stopped' || data.demo_stopped) {
+                stopCrawl();
+                updateStatus('Demo limit reached — crawl data saved');
+                showDemoLimitNotification();
+                if (typeof loadVisualizationData === 'function') {
+                    loadVisualizationData();
+                }
+            } else if (crawlState.isRunning && data.status !== 'completed') {
                 setTimeout(pollCrawlProgress, 1000); // Poll every second
             } else if (data.status === 'completed') {
                 stopCrawl();
@@ -622,6 +629,47 @@ function updateProgress(percentage) {
 
 function updateStatus(message) {
     document.getElementById('statusText').textContent = message;
+}
+
+function showDemoLimitNotification() {
+    // Remove existing demo notification if any
+    const existing = document.getElementById('demoLimitNotification');
+    if (existing) existing.remove();
+
+    const overlay = document.createElement('div');
+    overlay.id = 'demoLimitNotification';
+    overlay.style.cssText = `
+        position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+        background: rgba(0,0,0,0.6); z-index: 10000;
+        display: flex; align-items: center; justify-content: center;
+    `;
+
+    const box = document.createElement('div');
+    box.style.cssText = `
+        background: #1a1a2e; border: 1px solid #f59e0b; border-radius: 12px;
+        padding: 32px 40px; max-width: 480px; text-align: center;
+        color: #e0e0e0; box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+    `;
+    box.innerHTML = `
+        <div style="font-size: 28px; margin-bottom: 12px;">&#9888;</div>
+        <h2 style="color: #f59e0b; margin: 0 0 12px; font-size: 18px;">Demo Memory Limit Reached</h2>
+        <p style="margin: 0 0 16px; line-height: 1.5; font-size: 14px;">
+            This user has reached the 1.5 GB per-user memory limit.<br>
+            Your crawl data has been saved automatically.<br><br>
+            <strong>This is a free demo and is not intended for production use.</strong>
+        </p>
+        <button id="demoLimitDismiss" style="
+            background: #f59e0b; color: #000; border: none; padding: 10px 28px;
+            border-radius: 6px; font-weight: 600; cursor: pointer; font-size: 14px;
+        ">OK</button>
+    `;
+
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+
+    document.getElementById('demoLimitDismiss').addEventListener('click', function() {
+        overlay.remove();
+    });
 }
 
 function updateTimer() {

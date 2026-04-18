@@ -31,11 +31,19 @@ parser.add_argument('--disable-register', '-dr', action='store_true',
                     help='Disable new user registrations')
 parser.add_argument('--disable-guest', '-dg', action='store_true',
                     help='Disable guest login')
+parser.add_argument('--demo', '-dm', action='store_true',
+                    help='Demo mode: 1.5GB memory limit per user, crawls auto-stop at limit')
+parser.add_argument('--dangerously-skip-auth', '-dsa', action='store_true',
+                    help='DANGEROUS: Allow anyone to log in as any username with no password. '
+                         'The username is only used to separate per-user sessions. '
+                         'Do NOT use on a public network or in production.')
 args = parser.parse_args()
 
 LOCAL_MODE = args.local
 DISABLE_REGISTER = args.disable_register
 DISABLE_GUEST = args.disable_guest or os.getenv('DISABLE_GUEST', '').lower() in ('true', '1', 'yes')
+DEMO_MODE = args.demo or os.getenv('DEMO_MODE', '').lower() in ('true', '1', 'yes')
+SKIP_AUTH = args.dangerously_skip_auth or os.getenv('DANGEROUSLY_SKIP_AUTH', '').lower() in ('true', '1', 'yes')
 
 app = Flask(__name__, template_folder='web/templates', static_folder='web/static')
 app.secret_key = 'librecrawl-secret-key-change-in-production'  # TODO: Use environment variable in production
@@ -99,6 +107,53 @@ def auto_login_local_mode():
         print(f"Error in auto_login_local_mode: {e}")
         return False
 
+def skip_auth_login(username):
+    """Skip-auth login: create user record if missing, log them in.
+
+    Each username gets its own user_id, which drives per-user crawler
+    instance and settings isolation. No password is checked. Always
+    grants admin tier (matches local-mode behavior).
+
+    Returns (success, message).
+    """
+    import sqlite3
+    try:
+        conn = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'users.db'))
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        cursor.execute('SELECT id, username FROM users WHERE username = ?', (username,))
+        user = cursor.fetchone()
+
+        if user:
+            user_id = user['id']
+        else:
+            from src.auth_db import hash_password
+            random_password = generate_random_password()
+            password_hash = hash_password(random_password)
+            cursor.execute('''
+                INSERT INTO users (username, email, password_hash, verified, tier)
+                VALUES (?, ?, ?, 1, 'admin')
+            ''', (username, f'{username}@skipauth.local', password_hash))
+            conn.commit()
+            user_id = cursor.lastrowid
+
+        conn.close()
+
+        session['user_id'] = user_id
+        session['username'] = username
+        session['tier'] = 'admin'
+        session.permanent = True
+
+        return True, 'Logged in (authentication skipped)'
+    except sqlite3.IntegrityError as e:
+        # Most likely the generated email collides with an existing account
+        # whose email happens to match. Fall back to a clearer message.
+        return False, f'Username conflict: try a different username ({e})'
+    except Exception as e:
+        print(f"Error in skip_auth_login: {e}")
+        return False, f'Login error: {str(e)}'
+
 if LOCAL_MODE:
     print("=" * 60)
     print("LOCAL MODE ENABLED")
@@ -117,6 +172,21 @@ if DISABLE_GUEST:
     print("=" * 60)
     print("GUEST MODE DISABLED")
     print("Guest login is not allowed")
+    print("=" * 60)
+
+if DEMO_MODE:
+    print("=" * 60)
+    print("DEMO MODE ENABLED")
+    print("Memory limit: 1.5GB per user")
+    print("Crawls will auto-stop when limit is reached")
+    print("=" * 60)
+
+if SKIP_AUTH:
+    print("=" * 60)
+    print("⚠️  DANGEROUSLY SKIP AUTH ENABLED")
+    print("Anyone can log in as any username with no password!")
+    print("Username is used only to separate per-user sessions.")
+    print("DO NOT use on a public network or production server!")
     print("=" * 60)
 
 def get_client_ip():
@@ -429,7 +499,7 @@ def login_page():
     # Redirect to app if already logged in
     if 'user_id' in session:
         return redirect(url_for('index'))
-    return render_template('login.html', registration_disabled=DISABLE_REGISTER, guest_disabled=DISABLE_GUEST)
+    return render_template('login.html', registration_disabled=DISABLE_REGISTER, guest_disabled=DISABLE_GUEST, skip_auth=SKIP_AUTH)
 
 @app.route('/register')
 def register_page():
@@ -539,8 +609,18 @@ def register():
 @app.route('/api/login', methods=['POST'])
 def login():
     data = request.get_json()
-    username = data.get('username')
-    password = data.get('password')
+    username = (data.get('username') or '').strip()
+    password = data.get('password') or ''
+
+    # Dangerously skip auth: accept any username with no password.
+    # Username is only used to separate per-user sessions.
+    if SKIP_AUTH:
+        if not username:
+            return jsonify({'success': False, 'message': 'Username required'})
+        if len(username) > 50:
+            return jsonify({'success': False, 'message': 'Username must be 50 characters or less'})
+        success, message = skip_auth_login(username)
+        return jsonify({'success': success, 'message': message})
 
     success, message, user_data = authenticate_user(username, password)
 
@@ -665,6 +745,11 @@ def start_crawl():
         crawler.update_config(crawler_config)
     except Exception as e:
         print(f"Warning: Could not apply settings: {e}")
+
+    # Enforce demo mode limits
+    if DEMO_MODE:
+        crawler.config['demo_mode'] = True
+        crawler.config['demo_memory_limit_bytes'] = int(1.5 * 1024 * 1024 * 1024)  # 1.5GB
 
     # Pass user_id and session_id for database persistence
     success, message = crawler.start_crawl(url, user_id=user_id, session_id=session_id)
@@ -826,8 +911,6 @@ def visualization_data():
 @login_required
 def debug_memory():
     """Debug endpoint showing memory stats for all active crawler instances"""
-    from src.core.memory_profiler import MemoryProfiler
-
     with instances_lock:
         memory_stats = {
             'total_instances': len(crawler_instances),
@@ -838,19 +921,12 @@ def debug_memory():
             crawler = instance_data['crawler']
             stats = crawler.memory_monitor.get_stats()
 
-            # Get accurate data sizes
-            data_sizes = MemoryProfiler.get_crawler_data_size(
-                crawler.crawl_results,
-                crawler.link_manager.all_links if crawler.link_manager else [],
-                crawler.issue_detector.detected_issues if crawler.issue_detector else []
-            )
-
             memory_stats['instances'].append({
                 'session_id': session_id[:8] + '...',  # Truncate for privacy
                 'last_accessed': instance_data['last_accessed'].isoformat(),
                 'urls_crawled': len(crawler.crawl_results),
                 'memory': stats,
-                'data_sizes': data_sizes
+                'data_sizes': crawler.user_memory.get_stats()
             })
 
         return jsonify(memory_stats)
@@ -870,18 +946,11 @@ def debug_memory_profile():
             # Get object breakdown
             breakdown = MemoryProfiler.get_object_memory_breakdown()
 
-            # Get crawler-specific data sizes
-            data_sizes = MemoryProfiler.get_crawler_data_size(
-                crawler.crawl_results,
-                crawler.link_manager.all_links if crawler.link_manager else [],
-                crawler.issue_detector.detected_issues if crawler.issue_detector else []
-            )
-
             profiles.append({
                 'session_id': session_id[:8] + '...',
                 'urls_crawled': len(crawler.crawl_results),
                 'object_breakdown': breakdown,
-                'data_sizes': data_sizes
+                'data_sizes': crawler.user_memory.get_stats()
             })
 
         return jsonify({
@@ -1080,6 +1149,16 @@ def load_crawl_into_session(crawl_id):
         if crawler.issue_detector:
             crawler.issue_detector.detected_issues = issues
 
+        # Rebuild per-user memory tracker for loaded data
+        crawler.user_memory.reset()
+        crawler._demo_limit_reached = False
+        for url_data in urls:
+            crawler.user_memory.track_url(url_data)
+        if links:
+            crawler.user_memory.track_links(links)
+        if issues:
+            crawler.user_memory.track_issues(issues)
+
         # Set Flask session flag for force full refresh
         session['force_full_refresh'] = True
 
@@ -1107,6 +1186,11 @@ def resume_crawl_endpoint(crawl_id):
 
         # Get crawler for this session
         crawler = get_or_create_crawler()
+
+        # Enforce demo mode limits on resumed crawls
+        if DEMO_MODE:
+            crawler.config['demo_mode'] = True
+            crawler.config['demo_memory_limit_bytes'] = int(1.5 * 1024 * 1024 * 1024)
 
         # Resume from database
         success, message = crawler.resume_from_database(crawl_id, user_id=user_id, session_id=session_id)
