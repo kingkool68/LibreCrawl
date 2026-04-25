@@ -123,6 +123,56 @@ class LinkManager:
             except Exception:
                 continue
 
+        # Also collect <img src> as links so broken images are discoverable
+        imgs = soup.find_all('img', src=True)
+        for img in imgs:
+            src = img.get('src', '').strip()
+            if not src or src.startswith('data:'):
+                continue
+
+            alt_text = img.get('alt', '').strip()[:100]
+
+            try:
+                absolute_url = urljoin(source_url, src)
+                parsed_target = urlparse(absolute_url)
+
+                # Only HTTP(S) images
+                if parsed_target.scheme not in ('http', 'https'):
+                    continue
+
+                clean_url = f"{parsed_target.scheme}://{parsed_target.netloc}{parsed_target.path}"
+                if parsed_target.query:
+                    clean_url += f"?{parsed_target.query}"
+
+                target_domain_clean = parsed_target.netloc.replace('www.', '', 1)
+                base_domain_clean = self.base_domain.replace('www.', '', 1)
+                is_internal = target_domain_clean == base_domain_clean
+
+                target_status = None
+                for result in crawl_results:
+                    if result['url'] == clean_url:
+                        target_status = result['status_code']
+                        break
+
+                link_data = {
+                    'source_url': source_url,
+                    'target_url': clean_url,
+                    'anchor_text': alt_text or '(no alt text)',
+                    'is_internal': is_internal,
+                    'target_domain': parsed_target.netloc,
+                    'target_status': target_status,
+                    'placement': 'image'
+                }
+
+                with self.links_lock:
+                    link_key = f"{link_data['source_url']}|{link_data['target_url']}"
+                    if link_key not in self.links_set:
+                        self.links_set.add(link_key)
+                        self.all_links.append(link_data)
+
+            except Exception:
+                continue
+
     def _detect_link_placement(self, link_element):
         """Detect where on the page a link is placed"""
         # Check parent elements up the tree

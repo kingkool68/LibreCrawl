@@ -160,7 +160,7 @@ class SEOExtractor:
         """Extract image information"""
         images = soup.find_all('img')
 
-        for img in images[:20]:  # Limit to first 20 images
+        for img in images:
             src = img.get('src', '')
             alt = img.get('alt', '')
 

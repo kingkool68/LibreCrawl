@@ -131,6 +131,9 @@ class WebCrawler:
         # Robots.txt cache
         self._robots_cache = {}
 
+        # Image status cache (avoids re-checking the same image URL across pages)
+        self._image_status_cache = {}
+
         # Database persistence
         self.crawl_id = crawl_id
         self.resume_mode = resume_from_db
@@ -982,6 +985,20 @@ class WebCrawler:
                 # Track + batch new links
                 if links_after > links_before:
                     new_links = self.link_manager.all_links[links_before:links_after]
+
+                    # HEAD-check image URLs for broken image detection
+                    image_links = [l for l in new_links if l.get('placement') == 'image']
+                    if image_links:
+                        self._check_image_statuses(image_links)
+                        broken = [l for l in image_links
+                                  if l.get('target_status') is not None
+                                  and (l['target_status'] >= 400 or l['target_status'] == 0)]
+                        if broken:
+                            result['broken_images'] = [
+                                {'url': l['target_url'], 'status': l['target_status']}
+                                for l in broken
+                            ]
+
                     self.user_memory.track_links(new_links)
                     if self.db_save_enabled:
                         self.unsaved_links.extend(new_links)
@@ -1102,6 +1119,20 @@ class WebCrawler:
             # Track + batch new links
             if links_after > links_before:
                 new_links = self.link_manager.all_links[links_before:links_after]
+
+                # HEAD-check image URLs for broken image detection
+                image_links = [l for l in new_links if l.get('placement') == 'image']
+                if image_links:
+                    self._check_image_statuses(image_links)
+                    broken = [l for l in image_links
+                              if l.get('target_status') is not None
+                              and (l['target_status'] >= 400 or l['target_status'] == 0)]
+                    if broken:
+                        result['broken_images'] = [
+                            {'url': l['target_url'], 'status': l['target_status']}
+                            for l in broken
+                        ]
+
                 self.user_memory.track_links(new_links)
                 if self.db_save_enabled:
                     self.unsaved_links.extend(new_links)
@@ -1258,6 +1289,38 @@ class WebCrawler:
                 updated_count += 1
 
         print(f"Updated linked_from data for {updated_count} URLs")
+
+    def _check_image_statuses(self, image_links):
+        """HEAD-check image URLs to detect broken images.
+
+        Uses a per-crawl cache so the same image URL is only checked once
+        even if it appears on many pages.  Runs up to 5 checks in parallel,
+        capped at 50 images per page to avoid blocking the crawl.
+        """
+        to_check = []
+        for link in image_links:
+            url = link['target_url']
+            cached = self._image_status_cache.get(url)
+            if cached is not None:
+                link['target_status'] = cached
+            elif link.get('target_status') is None:
+                to_check.append(link)
+
+        if not to_check:
+            return
+
+        def _head_check(link):
+            url = link['target_url']
+            try:
+                resp = self.session.head(url, timeout=5, allow_redirects=True)
+                link['target_status'] = resp.status_code
+            except Exception:
+                link['target_status'] = 0
+            self._image_status_cache[url] = link['target_status']
+
+        batch = to_check[:50]
+        with ThreadPoolExecutor(max_workers=min(5, len(batch))) as pool:
+            pool.map(_head_check, batch)
 
     def _should_crawl_url(self, url):
         """Check if URL should be crawled based on settings"""

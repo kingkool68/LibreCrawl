@@ -34,6 +34,7 @@ class IssueDetector:
         self._check_structured_data_issues(result, issues)
         self._check_performance_issues(result, issues)
         self._check_indexability_issues(result, issues)
+        self._check_broken_image_issues(result, issues)
 
         # Add all detected issues
         with self.issues_lock:
@@ -337,6 +338,30 @@ class IssueDetector:
                 'issue': 'Nofollow Tag Present',
                 'details': 'Links on this page are NOT followed by search engines - has nofollow directive'
             })
+
+    def _check_broken_image_issues(self, result, issues):
+        """Check for broken image URLs on the page"""
+        url = result.get('url', '')
+        broken_images = result.get('broken_images', [])
+        for img in broken_images:
+            status = img.get('status', 0)
+            img_url = img.get('url', '')
+            if status == 0:
+                issues.append({
+                    'url': url,
+                    'type': 'error',
+                    'category': 'Content',
+                    'issue': 'Broken Image (No Response)',
+                    'details': f'Image does not respond: {img_url}'
+                })
+            elif status >= 400:
+                issues.append({
+                    'url': url,
+                    'type': 'error',
+                    'category': 'Content',
+                    'issue': f'Broken Image ({status})',
+                    'details': f'Image returned {status}: {img_url}'
+                })
 
     def detect_duplication_issues(self, all_results, similarity_threshold=0.85):
         """
